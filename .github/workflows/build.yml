@@ -1,0 +1,99 @@
+name: Build Swift Tweak
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            bash curl git perl make \
+            fakeroot rsync zip unzip \
+            libxml2-utils zstd
+
+      - name: Install Theos
+        run: |
+          bash -c "$(curl -fsSL https://raw.githubusercontent.com/theos/theos/master/bin/install-theos)"
+        env:
+          THEOS: ${{ runner.temp }}/theos
+
+      - name: Build rootless package
+        run: |
+          make clean
+          make package THEOS_PACKAGE_SCHEME=rootless
+        env:
+          THEOS: ${{ runner.temp }}/theos
+
+      - name: Upload Debian package
+        uses: actions/upload-artifact@v4
+        with:
+          name: tahoe-rootless
+          path: packages/*.deb
+          if-no-files-found: error
+          retention-days: 14
+
+  deploy:
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Download Debian package
+        uses: actions/download-artifact@v4
+        with:
+          name: tahoe-rootless
+          path: packages/
+
+      - name: Deploy to aptly repo via IPv4 proxy
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: hackclub.app
+          DEPLOY_USER: angel
+        run: |
+          set -euo pipefail
+
+          # Setup SSH
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          echo "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+          # Find the deb file
+          DEB_FILE=$(ls packages/*.deb | head -1)
+          echo "Deploying $DEB_FILE"
+
+          # Copy to server via IPv4 proxy
+          scp -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no "$DEB_FILE" "${DEPLOY_USER}@${DEPLOY_HOST}:/tmp/"
+
+          # Add to aptly repo and update
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no "${DEPLOY_USER}@${DEPLOY_HOST}" "
+            set -euo pipefail
+            DEB_FILE=$(ls /tmp/*.deb | head -1)
+            echo 'Adding package to aptly repo...'
+            aptly -config=/etc/aptly.conf repo add tweaks \"\$DEB_FILE\"
+            echo 'Updating published repo...'
+            aptly -config=/etc/aptly.conf publish update -skip-signing stable
+            echo 'Cleaning up...'
+            rm \"\$DEB_FILE\"
+            echo 'Deploy complete!'
+          "

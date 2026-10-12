@@ -1,0 +1,9 @@
+Package: dev.sillyangel.tahoe
+Name: tahoe
+Version: 0.0.1
+Architecture: iphoneos-arm
+Description: An awesome Orion tweak!
+Maintainer: angel
+Author: angel
+Section: Tweaks
+Depends: ${ORION}, firmware (>= 12.2)

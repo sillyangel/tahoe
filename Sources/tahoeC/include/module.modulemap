@@ -1,0 +1,4 @@
+module tahoeC {
+    umbrella "."
+    export *
+}
